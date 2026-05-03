@@ -4,12 +4,7 @@ import './App.css';
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
 // ─── Severity badge colors ────────────────────────────────────────────────────
-const severityColor = {
-  critical: '#c0392b',
-  high: '#e67e22',
-  medium: '#f1c40f',
-  low: '#27ae60',
-};
+
 
 // ─── Upload Drop Zone ─────────────────────────────────────────────────────────
 function DropZone({ label, subLabel, icon, file, onFile, accept }) {
