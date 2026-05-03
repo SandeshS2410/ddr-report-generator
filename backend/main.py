@@ -32,12 +32,10 @@ def extract_from_pdf(file_bytes, source_label):
                     xref = img[0]
                     base_image = doc.extract_image(xref)
                     image_bytes = base_image["image"]
-                    # Resize if too large (max 1MB)
                     if len(image_bytes) > 1_000_000:
                         continue
                     image_ext = base_image["ext"]
                     mime_type = "image/jpeg" if image_ext in ("jpg", "jpeg") else f"image/{image_ext}"
-                    # Only support jpeg and png
                     if mime_type not in ("image/jpeg", "image/png"):
                         continue
                     b64_image = base64.b64encode(image_bytes).decode()
@@ -89,7 +87,11 @@ async def generate_ddr(
         thermal_b64 = base64.b64encode(thermal_bytes).decode()
         all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
 
-    # ── Build text-only message for Groq (no images in API call) ──
+    # ── Truncate text to fit Groq free tier (max 3000 chars each) ──
+    insp_text = insp_text[:3000] if len(insp_text) > 3000 else insp_text
+    thermal_text = thermal_text[:3000] if len(thermal_text) > 3000 else thermal_text
+
+    # ── Build text-only message for Groq ──
     image_summary = ""
     if all_images:
         image_summary = f"\n\nIMAGES FOUND: {len(all_images)} images extracted from documents."
