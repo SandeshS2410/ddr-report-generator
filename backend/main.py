@@ -4,7 +4,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
-import fitz  
+import fitz  # PyMuPDF
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -21,36 +21,38 @@ def extract_from_pdf(file_bytes, source_label):
     """Extract text and images from PDF using PyMuPDF"""
     text = ""
     images = []
-    
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
-        
-        # Extract text
         for page in doc:
             text += page.get_text()
-        
-        # Extract images
         for page_num, page in enumerate(doc):
             image_list = page.get_images(full=True)
             for img_index, img in enumerate(image_list):
-                xref = img[0]
-                base_image = doc.extract_image(xref)
-                image_bytes = base_image["image"]
-                image_ext = base_image["ext"]
-                mime_type = f"image/{image_ext}" if image_ext != "jpg" else "image/jpeg"
-                b64_image = base64.b64encode(image_bytes).decode()
-                images.append({
-                    "id": f"{source_label}_p{page_num+1}_img{img_index+1}",
-                    "data": b64_image,
-                    "mime_type": mime_type,
-                    "source": source_label,
-                    "page": page_num + 1
-                })
-        
+                try:
+                    xref = img[0]
+                    base_image = doc.extract_image(xref)
+                    image_bytes = base_image["image"]
+                    # Resize if too large (max 1MB)
+                    if len(image_bytes) > 1_000_000:
+                        continue
+                    image_ext = base_image["ext"]
+                    mime_type = "image/jpeg" if image_ext in ("jpg", "jpeg") else f"image/{image_ext}"
+                    # Only support jpeg and png
+                    if mime_type not in ("image/jpeg", "image/png"):
+                        continue
+                    b64_image = base64.b64encode(image_bytes).decode()
+                    images.append({
+                        "id": f"{source_label}_p{page_num+1}_img{img_index+1}",
+                        "data": b64_image,
+                        "mime_type": mime_type,
+                        "source": source_label,
+                        "page": page_num + 1
+                    })
+                except:
+                    continue
         doc.close()
     except Exception as e:
-        text = f"[Could not extract text from PDF: {str(e)}]"
-    
+        text = f"[Could not extract text: {str(e)}]"
     return text, images
 
 @app.post("/generate-ddr")
@@ -69,50 +71,43 @@ async def generate_ddr(
     thermal_mime = get_mime(thermal_report.filename)
 
     all_images = []
-    content = []
 
-    # ── Process Inspection Report ──
+    # ── Extract text and images ──
     if "pdf" in insp_mime:
         insp_text, insp_images = extract_from_pdf(insp_bytes, "Inspection")
         all_images.extend(insp_images)
-        content.append({"type": "text", "text": f"DOCUMENT: Inspection Report\n\n{insp_text}"})
-        # Add extracted images to content
-        for img in insp_images[:3]:  # max 3 images per doc
-            content.append({"type": "text", "text": f"[Image from Inspection Report - Page {img['page']}]"})
-            content.append({"type": "image_url", "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"}})
     else:
+        insp_text = f"[Image file: {inspection_report.filename}]"
         insp_b64 = base64.b64encode(insp_bytes).decode()
-        content.append({"type": "text", "text": "DOCUMENT: Inspection Report"})
-        content.append({"type": "image_url", "image_url": {"url": f"data:{insp_mime};base64,{insp_b64}"}})
-        all_images.append({
-            "id": "inspection_img1",
-            "data": insp_b64,
-            "mime_type": insp_mime,
-            "source": "Inspection",
-            "page": 1
-        })
+        all_images.append({"id": "insp_img1", "data": insp_b64, "mime_type": insp_mime, "source": "Inspection", "page": 1})
 
-    # ── Process Thermal Report ──
     if "pdf" in thermal_mime:
         thermal_text, thermal_images = extract_from_pdf(thermal_bytes, "Thermal")
         all_images.extend(thermal_images)
-        content.append({"type": "text", "text": f"DOCUMENT: Thermal Report\n\n{thermal_text}"})
-        for img in thermal_images[:3]:  # max 3 images per doc
-            content.append({"type": "text", "text": f"[Image from Thermal Report - Page {img['page']}]"})
-            content.append({"type": "image_url", "image_url": {"url": f"data:{img['mime_type']};base64,{img['data']}"}})
     else:
+        thermal_text = f"[Image file: {thermal_report.filename}]"
         thermal_b64 = base64.b64encode(thermal_bytes).decode()
-        content.append({"type": "text", "text": "DOCUMENT: Thermal Report"})
-        content.append({"type": "image_url", "image_url": {"url": f"data:{thermal_mime};base64,{thermal_b64}"}})
-        all_images.append({
-            "id": "thermal_img1",
-            "data": thermal_b64,
-            "mime_type": thermal_mime,
-            "source": "Thermal",
-            "page": 1
-        })
+        all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
 
-    content.append({"type": "text", "text": "Generate the complete DDR report based on the provided documents."})
+    # ── Build text-only message for Groq (no images in API call) ──
+    image_summary = ""
+    if all_images:
+        image_summary = f"\n\nIMAGES FOUND: {len(all_images)} images extracted from documents."
+        for img in all_images:
+            image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
+        image_summary += "\nPlease reference these images in appropriate sections of the DDR report using [Image: image_id] notation."
+
+    user_message = f"""DOCUMENT: Inspection Report
+
+{insp_text}
+
+DOCUMENT: Thermal Report
+
+{thermal_text}
+
+{image_summary}
+
+Generate the complete DDR report based on the provided documents."""
 
     try:
         async with httpx.AsyncClient(timeout=120) as client:
@@ -126,7 +121,7 @@ async def generate_ddr(
                     "model": "meta-llama/llama-4-scout-17b-16e-instruct",
                     "messages": [
                         {"role": "system", "content": DDR_PROMPT},
-                        {"role": "user", "content": content}
+                        {"role": "user", "content": user_message}
                     ],
                     "max_tokens": 4096
                 }
@@ -135,6 +130,9 @@ async def generate_ddr(
             data = response.json()
             report = data["choices"][0]["message"]["content"]
 
+    except httpx.HTTPStatusError as e:
+        detail = f"Groq API error: {e.response.status_code} - {e.response.text}"
+        raise HTTPException(status_code=500, detail=detail)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
