@@ -40,7 +40,7 @@ async def generate_ddr(
         ]
 
         response = client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.0-flash",
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=DDR_PROMPT,
