@@ -94,7 +94,7 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [activeImg, setActiveImg] = useState(null);
 
-  const canGenerate = inspFile && thermalFile && apiKey.startsWith('sk-');
+  const canGenerate = inspFile && thermalFile && apiKey.startsWith('AIza');
 
   const generate = async () => {
     if (!canGenerate) return;
@@ -109,7 +109,7 @@ export default function App() {
     formData.append('api_key', apiKey);
 
     try {
-      setStatusMsg('Analysing documents with Claude AI…');
+      setStatusMsg('Analysing documents with Gemini AI…');
       const resp = await fetch(`${API_BASE}/generate-ddr`, {
         method: 'POST',
         body: formData,
@@ -189,17 +189,17 @@ export default function App() {
           </div>
 
           <div className="api-row">
-            <label className="api-label">Anthropic API Key</label>
+            <label className="api-label">Gemini API Key</label>
             <input
               className="api-input"
               type="password"
-              placeholder="sk-ant-..."
+              placeholder="AIzaSy..."
               value={apiKey}
               onChange={e => setApiKey(e.target.value)}
               autoComplete="off"
             />
           </div>
-          <p className="api-hint">Your key is sent directly to Anthropic — never stored on our servers.</p>
+          <p className="api-hint">Your key is sent directly to Google — never stored on our servers.</p>
 
           <button
             className={`gen-btn ${loading ? 'loading' : ''}`}
