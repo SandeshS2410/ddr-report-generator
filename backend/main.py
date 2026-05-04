@@ -33,6 +33,8 @@ def extract_from_pdf(file_bytes, source_label):
                     image_bytes = base_image["image"]
                     if len(image_bytes) > 1_000_000:
                         continue
+                    if len(image_bytes) < 10_000:  # skip tiny color scale images
+                        continue
                     image_ext = base_image["ext"]
                     mime_type = "image/jpeg" if image_ext in ("jpg", "jpeg") else f"image/{image_ext}"
                     if mime_type not in ("image/jpeg", "image/png"):
