@@ -53,6 +53,20 @@ def extract_from_pdf(file_bytes, source_label):
         text = f"[Could not extract text: {str(e)}]"
     return text, images
 
+def smart_truncate(text, max_chars=1500):
+    priority_keywords = ['summary', 'dampness', 'leakage', 'crack', 'hollow', 'seepage',
+                        'observation', 'hotspot', 'coldspot', 'impacted', 'issue']
+    lines = text.split('\n')
+    priority_lines = []
+    other_lines = []
+    for line in lines:
+        if any(kw in line.lower() for kw in priority_keywords):
+            priority_lines.append(line)
+        else:
+            other_lines.append(line)
+    combined = '\n'.join(priority_lines + other_lines)
+    return combined[:max_chars]
+
 @app.post("/generate-ddr")
 async def generate_ddr(
     inspection_report: UploadFile = File(...),
@@ -87,9 +101,9 @@ async def generate_ddr(
         thermal_b64 = base64.b64encode(thermal_bytes).decode()
         all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
 
-    # ── Truncate text to fit Groq free tier (max 3000 chars each) ──
-    insp_text = insp_text[:3000] if len(insp_text) > 3000 else insp_text
-    thermal_text = thermal_text[:3000] if len(thermal_text) > 3000 else thermal_text
+    # ── Smart truncate to fit Groq free tier ──
+    insp_text = smart_truncate(insp_text, 1500)
+    thermal_text = smart_truncate(thermal_text, 1500)
 
     # ── Build text-only message for Groq ──
     image_summary = ""
