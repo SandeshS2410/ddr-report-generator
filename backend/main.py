@@ -109,8 +109,10 @@ async def generate_ddr(
     image_summary = ""
     if all_images:
         image_summary = f"\n\nIMAGES FOUND: {len(all_images)} images extracted from documents."
-        for img in all_images:
-            image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
+        for img in all_images[:10]:
+    image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
+if len(all_images) > 10:
+    image_summary += f"\n... and {len(all_images) - 10} more images"
         image_summary += "\nPlease reference these images in appropriate sections of the DDR report using [Image: image_id] notation."
 
     user_message = f"""DOCUMENT: Inspection Report
