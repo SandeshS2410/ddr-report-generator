@@ -18,7 +18,6 @@ def get_mime(filename):
     return "application/pdf"
 
 def extract_from_pdf(file_bytes, source_label):
-    """Extract text and images from PDF using PyMuPDF"""
     text = ""
     images = []
     try:
@@ -84,7 +83,6 @@ async def generate_ddr(
 
     all_images = []
 
-    # ── Extract text and images ──
     if "pdf" in insp_mime:
         insp_text, insp_images = extract_from_pdf(insp_bytes, "Inspection")
         all_images.extend(insp_images)
@@ -101,18 +99,16 @@ async def generate_ddr(
         thermal_b64 = base64.b64encode(thermal_bytes).decode()
         all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
 
-    # ── Smart truncate to fit Groq free tier ──
     insp_text = smart_truncate(insp_text, 1500)
     thermal_text = smart_truncate(thermal_text, 1500)
 
-    # ── Build text-only message for Groq ──
     image_summary = ""
     if all_images:
         image_summary = f"\n\nIMAGES FOUND: {len(all_images)} images extracted from documents."
         for img in all_images[:10]:
-    image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
-if len(all_images) > 10:
-    image_summary += f"\n... and {len(all_images) - 10} more images"
+            image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
+        if len(all_images) > 10:
+            image_summary += f"\n... and {len(all_images) - 10} more images"
         image_summary += "\nPlease reference these images in appropriate sections of the DDR report using [Image: image_id] notation."
 
     user_message = f"""DOCUMENT: Inspection Report
