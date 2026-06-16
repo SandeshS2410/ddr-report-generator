@@ -56,7 +56,9 @@ def extract_from_pdf(file_bytes, source_label):
 
 def smart_truncate(text, max_chars=1500):
     priority_keywords = ['summary', 'dampness', 'leakage', 'crack', 'hollow', 'seepage',
-                        'observation', 'hotspot', 'coldspot', 'impacted', 'issue']
+                        'observation', 'hotspot', 'coldspot', 'impacted', 'issue',
+                        'thermal', 'temperature', 'rb0', 'bosch', 'emissivity',
+                        'reflected', '°c', 'celsius', 'skirting', 'bathroom', 'parking']
     lines = text.split('\n')
     priority_lines = []
     other_lines = []
@@ -101,8 +103,8 @@ async def generate_ddr(
         thermal_b64 = base64.b64encode(thermal_bytes).decode()
         all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
 
-    insp_text = smart_truncate(insp_text, 1500)
-    thermal_text = smart_truncate(thermal_text, 1500)
+    insp_text = smart_truncate(insp_text, 2000)
+    thermal_text = smart_truncate(thermal_text, 3000)
 
     image_summary = ""
     if all_images:
