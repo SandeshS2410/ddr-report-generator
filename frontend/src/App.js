@@ -60,22 +60,33 @@ function ReportSection({ num, title, children }) {
 function parseReport(text) {
   const sections = {};
   const patterns = [
-    { key: 'summary', start: '1. PROPERTY ISSUE SUMMARY', end: '2. AREA-WISE OBSERVATIONS' },
-    { key: 'observations', start: '2. AREA-WISE OBSERVATIONS', end: '3. PROBABLE ROOT CAUSE' },
-    { key: 'rootcause', start: '3. PROBABLE ROOT CAUSE', end: '4. SEVERITY ASSESSMENT' },
-    { key: 'severity', start: '4. SEVERITY ASSESSMENT', end: '5. RECOMMENDED ACTIONS' },
-    { key: 'actions', start: '5. RECOMMENDED ACTIONS', end: '6. ADDITIONAL NOTES' },
-    { key: 'notes', start: '6. ADDITIONAL NOTES', end: '7. MISSING OR UNCLEAR INFORMATION' },
-    { key: 'missing', start: '7. MISSING OR UNCLEAR INFORMATION', end: 'END OF REPORT' },
+    { key: 'summary', markers: ['1. PROPERTY ISSUE SUMMARY', '## 1.', '#1.'] },
+    { key: 'observations', markers: ['2. AREA-WISE OBSERVATIONS', '## 2.', '#2.'] },
+    { key: 'rootcause', markers: ['3. PROBABLE ROOT CAUSE', '## 3.', '#3.'] },
+    { key: 'severity', markers: ['4. SEVERITY ASSESSMENT', '## 4.', '#4.'] },
+    { key: 'actions', markers: ['5. RECOMMENDED ACTIONS', '## 5.', '#5.'] },
+    { key: 'notes', markers: ['6. ADDITIONAL NOTES', '## 6.', '#6.'] },
+    { key: 'missing', markers: ['7. MISSING OR UNCLEAR INFORMATION', '## 7.', '#7.'] },
   ];
 
-  for (const { key, start, end } of patterns) {
-    const si = text.indexOf(start);
-    const ei = text.indexOf(end);
-    if (si !== -1) {
-      const content = text.slice(si + start.length, ei !== -1 ? ei : undefined).trim();
-      sections[key] = content.replace(/^[─\-─]+/gm, '').trim();
+  const sectionStarts = [];
+  for (const { key, markers } of patterns) {
+    for (const marker of markers) {
+      const idx = text.indexOf(marker);
+      if (idx !== -1) {
+        sectionStarts.push({ key, idx });
+        break;
+      }
     }
+  }
+
+  sectionStarts.sort((a, b) => a.idx - b.idx);
+
+  for (let i = 0; i < sectionStarts.length; i++) {
+    const start = sectionStarts[i].idx;
+    const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].idx : undefined;
+    const content = text.slice(start, end).replace(/^#+\s*\d+\.\s*/m, '').trim();
+    sections[sectionStarts[i].key] = content;
   }
 
   return sections;
