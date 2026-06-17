@@ -3,7 +3,30 @@ import './App.css';
 
 const API_BASE = process.env.REACT_APP_API_URL || '';
 
-// ─── Upload Drop Zone ─────────────────────────────────────────────────────────
+// ─── Image helpers ────────────────────────────────────────────────────────────
+
+function buildImageMap(images) {
+  const map = {};
+  if (images) images.forEach(img => { map[img.id] = img; });
+  return map;
+}
+
+function typeBadgeColor(imgType) {
+  if (imgType === 'thermal_scan')     return '#e65c00';
+  if (imgType === 'visual_photo')     return '#1a7a5e';
+  if (imgType === 'inspection_photo') return '#3b6fd4';
+  return '#888';
+}
+
+function typeLabel(imgType) {
+  if (imgType === 'thermal_scan')     return '🌡 Thermal Scan';
+  if (imgType === 'visual_photo')     return '📷 Visual Photo';
+  if (imgType === 'inspection_photo') return '🔍 Inspection Photo';
+  return imgType || 'Image';
+}
+
+// ─── Drop Zone ────────────────────────────────────────────────────────────────
+
 function DropZone({ label, subLabel, icon, file, onFile, accept }) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef();
@@ -38,7 +61,8 @@ function DropZone({ label, subLabel, icon, file, onFile, accept }) {
   );
 }
 
-// ─── Report Section ───────────────────────────────────────────────────────────
+// ─── Collapsible Section ──────────────────────────────────────────────────────
+
 function ReportSection({ num, title, children }) {
   const [open, setOpen] = useState(true);
   return (
@@ -53,93 +77,226 @@ function ReportSection({ num, title, children }) {
   );
 }
 
-// ─── Parse report text into sections ─────────────────────────────────────────
-function parseReport(text) {
-  const sections = {};
-  const patterns = [
-    { key: 'summary', markers: ['1. PROPERTY ISSUE SUMMARY', '## 1.', '#1.', '**1.'] },
-    { key: 'observations', markers: ['2. AREA-WISE OBSERVATIONS', '## 2.', '#2.', '**2.'] },
-    { key: 'rootcause', markers: ['3. PROBABLE ROOT CAUSE', '## 3.', '#3.', '**3.'] },
-    { key: 'severity', markers: ['4. SEVERITY ASSESSMENT', '## 4.', '#4.', '**4.'] },
-    { key: 'actions', markers: ['5. RECOMMENDED ACTIONS', '## 5.', '#5.', '**5.'] },
-    { key: 'notes', markers: ['6. ADDITIONAL NOTES', '## 6.', '#6.', '**6.'] },
-    { key: 'missing', markers: ['7. MISSING OR UNCLEAR INFORMATION', '## 7.', '#7.', '**7.'] },
-  ];
+// ─── Report text renderer with inline images ──────────────────────────────────
+/**
+ * Splits report text on {IMAGE:id} tokens.
+ * Each token is replaced with the actual image from imageMap.
+ * Plain text is rendered with basic markdown formatting.
+ */
+function ReportWithImages({ text, imageMap, onImageClick }) {
+  if (!text) return null;
 
-  const sectionStarts = [];
-  for (const { key, markers } of patterns) {
-    for (const marker of markers) {
-      const idx = text.indexOf(marker);
-      if (idx !== -1) {
-        sectionStarts.push({ key, idx });
-        break;
-      }
-    }
-  }
-
-  sectionStarts.sort((a, b) => a.idx - b.idx);
-
-  for (let i = 0; i < sectionStarts.length; i++) {
-    const start = sectionStarts[i].idx;
-    const end = i + 1 < sectionStarts.length ? sectionStarts[i + 1].idx : undefined;
-    const content = text.slice(start, end).replace(/^[#*\s]*\d+\.\s*/m, '').trim();
-    sections[sectionStarts[i].key] = content;
-  }
-
-  return sections;
-}
-
-// ─── Render report text with inline images ────────────────────────────────────
-function ReportWithImages({ text, images }) {
-  if (!images || images.length === 0) {
-    return <pre className="section-pre">{text}</pre>;
-  }
-
-  // Build a map of image id -> image object
-  const imgMap = {};
-  images.forEach(img => { imgMap[img.id] = img; });
-
-  // Split text by image references like [Inspection_p1_img1]
-  const parts = text.split(/(\[[^\]]+\])/g);
+  // Split on {IMAGE:some_id} — this is the token format the backend/AI uses
+  const parts = text.split(/(\{IMAGE:[^}]+\})/g);
 
   return (
-    <div className="section-pre" style={{ whiteSpace: 'pre-wrap' }}>
+    <div className="section-content">
       {parts.map((part, i) => {
-        const match = part.match(/^\[([^\]]+)\]$/);
+        // Check if this part is an image token
+        const match = part.match(/^\{IMAGE:([^}]+)\}$/);
         if (match) {
-          const imgId = match[1];
-          const img = imgMap[imgId];
+          const imgId = match[1].trim();
+          const img   = imageMap[imgId];
+
           if (img) {
+            // Render the actual image
             return (
-              <div key={i} style={{ margin: '8px 0' }}>
+              <div key={i} className="inline-image-wrap">
                 <img
                   src={`data:${img.mime_type};base64,${img.data}`}
                   alt={imgId}
-                  style={{ maxWidth: '340px', borderRadius: '6px', border: '1px solid #333', display: 'block' }}
+                  className="inline-report-img"
+                  onClick={() => onImageClick && onImageClick(img)}
+                  title="Click to enlarge"
                 />
-                <div style={{ fontSize: '11px', color: '#4fd1a5', marginTop: '4px' }}>{imgId} · {img.source} · Page {img.page}</div>
+                <div className="inline-img-caption">
+                  <span
+                    className="img-badge"
+                    style={{ backgroundColor: typeBadgeColor(img.img_type) }}
+                  >
+                    {typeLabel(img.img_type)}
+                  </span>
+                  <span className="img-badge-meta">
+                    {img.source} · Page {img.page} · {img.size_kb} KB
+                  </span>
+                </div>
               </div>
             );
           }
+
+          // Image ID referenced but not found
+          return (
+            <div key={i} className="img-not-found">
+              ⚠ Image Not Available: <code>{imgId}</code>
+            </div>
+          );
         }
-        return <span key={i}>{part}</span>;
+
+        // Render plain text with basic markdown
+        return <MarkdownText key={i} text={part} />;
       })}
     </div>
   );
 }
 
+/** Renders basic markdown: ##, ###, **, - bullets, table rows */
+function MarkdownText({ text }) {
+  if (!text) return null;
+  const lines = text.split('\n');
+
+  return (
+    <>
+      {lines.map((line, i) => {
+        if (line.startsWith('### '))
+          return <h4 key={i} className="md-h3">{line.slice(4)}</h4>;
+        if (line.startsWith('## '))
+          return <h3 key={i} className="md-h2">{line.slice(3)}</h3>;
+        if (line.startsWith('|'))
+          return <div key={i} className="md-table-row">{line}</div>;
+        if ((line.startsWith('**') && line.endsWith('**')) && line.length > 4)
+          return <p key={i} className="md-bold-para">{line.slice(2, -2)}</p>;
+        if (line.startsWith('- ') || line.startsWith('• '))
+          return <li key={i} className="md-li">{applyInlineBold(line.slice(2))}</li>;
+        if (!line.trim())
+          return <div key={i} className="md-spacer" />;
+        return <p key={i} className="md-p">{applyInlineBold(line)}</p>;
+      })}
+    </>
+  );
+}
+
+function applyInlineBold(text) {
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((p, i) =>
+    p.startsWith('**') && p.endsWith('**')
+      ? <strong key={i}>{p.slice(2, -2)}</strong>
+      : p
+  );
+}
+
+// ─── Parse report text into named sections ────────────────────────────────────
+
+function parseReport(text) {
+  const defs = [
+    { key: 'summary',      marker: '## 1. PROPERTY ISSUE SUMMARY' },
+    { key: 'observations', marker: '## 2. AREA-WISE OBSERVATIONS' },
+    { key: 'rootcause',    marker: '## 3. PROBABLE ROOT CAUSE' },
+    { key: 'severity',     marker: '## 4. SEVERITY ASSESSMENT' },
+    { key: 'actions',      marker: '## 5. RECOMMENDED ACTIONS' },
+    { key: 'notes',        marker: '## 6. ADDITIONAL NOTES' },
+    { key: 'missing',      marker: '## 7. MISSING OR UNCLEAR INFORMATION' },
+  ];
+
+  const found = [];
+  for (const def of defs) {
+    let idx = text.indexOf(def.marker);
+    if (idx === -1) {
+      // Try common LLM variations
+      const fallbacks = [
+        def.marker.replace('## ', ''),
+        def.marker.replace('## ', '# '),
+        def.marker.replace('## ', '**') + '**',
+      ];
+      for (const fb of fallbacks) {
+        idx = text.indexOf(fb);
+        if (idx !== -1) break;
+      }
+    }
+    if (idx !== -1) found.push({ key: def.key, idx });
+  }
+
+  found.sort((a, b) => a.idx - b.idx);
+
+  const sections = {};
+  for (let i = 0; i < found.length; i++) {
+    const start = found[i].idx;
+    const end   = i + 1 < found.length ? found[i + 1].idx : undefined;
+    let content = text.slice(start, end);
+    // Remove the header line
+    content = content.replace(/^[#*\s]*\d+\.\s[^\n]+\n/, '').trim();
+    sections[found[i].key] = content;
+  }
+
+  if (Object.keys(sections).length === 0) {
+    sections.summary = text;
+  }
+
+  return sections;
+}
+
+// ─── Download as standalone HTML ──────────────────────────────────────────────
+
+function buildDownloadHTML(reportText, images) {
+  const imgMap = buildImageMap(images);
+  const parts  = reportText.split(/(\{IMAGE:[^}]+\})/g);
+  let htmlBody = '';
+
+  parts.forEach(part => {
+    const match = part.match(/^\{IMAGE:([^}]+)\}$/);
+    if (match) {
+      const imgId = match[1].trim();
+      const img   = imgMap[imgId];
+      if (img) {
+        htmlBody += `<div style="margin:12px 0;">
+          <img src="data:${img.mime_type};base64,${img.data}"
+               style="max-width:420px;border:1px solid #ddd;border-radius:8px;display:block;"/>
+          <div style="font-size:11px;color:#666;margin-top:4px;">
+            ${typeLabel(img.img_type)} · ${img.source} · Page ${img.page}
+          </div>
+        </div>`;
+      } else {
+        htmlBody += `<div style="color:#c0392b;font-size:12px;margin:8px 0;">
+          ⚠ Image Not Available: ${imgId}
+        </div>`;
+      }
+    } else {
+      let e = part
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      e = e.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      e = e.replace(/^### (.+)$/mg, '<h3 style="color:#1a7a5e;margin:14px 0 4px;">$1</h3>');
+      e = e.replace(/^## (.+)$/mg,  '<h2 style="color:#1a4a5e;border-bottom:1px solid #ddd;padding-bottom:6px;margin:22px 0 10px;">$1</h2>');
+      e = e.replace(/^- (.+)$/mg,   '<li style="margin:3px 0;">$1</li>');
+      e = e.replace(/^\|(.+)\|$/mg, '<div style="font-family:monospace;font-size:12px;background:#f5f5f5;padding:2px 6px;">|$1|</div>');
+      htmlBody += `<div style="line-height:1.7;">${e}</div>`;
+    }
+  });
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<title>DDR Report ${new Date().toISOString().slice(0,10)}</title>
+<style>
+  body{font-family:Arial,sans-serif;max-width:900px;margin:40px auto;padding:24px;color:#222;font-size:14px;line-height:1.7;}
+  h1{color:#1a4a5e;border-bottom:3px solid #1a7a5e;padding-bottom:10px;}
+  img{max-width:100%;border-radius:6px;}
+  li{margin:4px 0;}
+</style>
+</head>
+<body>
+  <h1>Detailed Diagnostic Report (DDR)</h1>
+  <p style="color:#888;font-size:12px;">Generated: ${new Date().toLocaleString()}</p>
+  <hr/>
+  ${htmlBody}
+  <hr style="margin-top:40px;"/>
+  <p style="font-size:11px;color:#aaa;text-align:center;">Generated by DDR Report Generator</p>
+</body>
+</html>`;
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [inspFile, setInspFile] = useState(null);
+  const [inspFile,    setInspFile]    = useState(null);
   const [thermalFile, setThermalFile] = useState(null);
-  const [apiKey, setApiKey] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [statusMsg, setStatusMsg] = useState('');
-  const [result, setResult] = useState(null);
-  const [rawReport, setRawReport] = useState('');
-  const [viewMode, setViewMode] = useState('structured');
-  const [copied, setCopied] = useState(false);
-  const [activeImg, setActiveImg] = useState(null);
+  const [apiKey,      setApiKey]      = useState('');
+  const [loading,     setLoading]     = useState(false);
+  const [statusMsg,   setStatusMsg]   = useState('');
+  const [result,      setResult]      = useState(null);
+  const [rawReport,   setRawReport]   = useState('');
+  const [viewMode,    setViewMode]    = useState('structured');
+  const [copied,      setCopied]      = useState(false);
+  const [activeImg,   setActiveImg]   = useState(null);
 
   const canGenerate = inspFile && thermalFile && apiKey.startsWith('gsk_');
 
@@ -152,14 +309,14 @@ export default function App() {
 
     const formData = new FormData();
     formData.append('inspection_report', inspFile);
-    formData.append('thermal_report', thermalFile);
-    formData.append('api_key', apiKey);
+    formData.append('thermal_report',    thermalFile);
+    formData.append('api_key',           apiKey);
 
     try {
       setStatusMsg('Analysing documents with Groq AI…');
       const resp = await fetch(`${API_BASE}/generate-ddr`, {
         method: 'POST',
-        body: formData,
+        body:   formData,
       });
 
       if (!resp.ok) {
@@ -186,114 +343,29 @@ export default function App() {
   };
 
   const downloadReport = () => {
-    // Build image map
-    const imgMap = {};
-    if (result && result.images) {
-      result.images.forEach(img => { imgMap[img.id] = img; });
-    }
-
-    // Convert report text to HTML with embedded images
-    let htmlBody = '';
-    const lines = rawReport.split('\n');
-
-    lines.forEach(line => {
-      // Replace image references inline
-      const parts = line.split(/(\[[^\]]+\])/g);
-      let lineHtml = '';
-      parts.forEach(part => {
-        const match = part.match(/^\[([^\]]+)\]$/);
-        if (match && imgMap[match[1]]) {
-          const img = imgMap[match[1]];
-          lineHtml += `<div style="margin:8px 0;">
-            <img src="data:${img.mime_type};base64,${img.data}" 
-                 style="max-width:400px;border:1px solid #ddd;border-radius:6px;display:block;" 
-                 alt="${img.id}"/>
-            <div style="font-size:11px;color:#666;margin-top:3px;">${img.id} · ${img.source} · Page ${img.page}</div>
-          </div>`;
-        } else {
-          // Escape HTML and style markdown
-          let escaped = part
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-          // Bold text
-          escaped = escaped.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-          // Headers
-          escaped = escaped.replace(/^#{1,3}\s*(.+)/, '<strong style="font-size:15px;">$1</strong>');
-          lineHtml += escaped;
-        }
-      });
-      htmlBody += `<div style="min-height:1.5em;">${lineHtml}</div>`;
-    });
-
-    // Add all images section at the bottom
-    let allImagesSection = '';
-    if (result && result.images && result.images.length > 0) {
-      allImagesSection = `
-        <hr style="margin:40px 0;border:1px solid #eee;"/>
-        <h2 style="color:#1a7a5e;">All Extracted Images (${result.images.length})</h2>
-        <div style="display:flex;flex-wrap:wrap;gap:12px;margin-top:16px;">
-          ${result.images.map(img => `
-            <div style="text-align:center;">
-              <img src="data:${img.mime_type};base64,${img.data}" 
-                   style="width:160px;height:110px;object-fit:cover;border:1px solid #ddd;border-radius:6px;display:block;"/>
-              <div style="font-size:10px;color:#888;margin-top:3px;">${img.id}</div>
-              <div style="font-size:10px;color:#aaa;">${img.source} · p.${img.page}</div>
-            </div>
-          `).join('')}
-        </div>`;
-    }
-
-    const fullHtml = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="utf-8"/>
-<title>DDR Report - ${new Date().toISOString().slice(0, 10)}</title>
-<style>
-  body { 
-    font-family: Arial, sans-serif; 
-    max-width: 960px; 
-    margin: 40px auto; 
-    padding: 20px; 
-    line-height: 1.7; 
-    color: #222; 
-    font-size: 14px;
-  }
-  h1 { color: #1a7a5e; border-bottom: 2px solid #1a7a5e; padding-bottom: 8px; }
-  img { display: block; }
-</style>
-</head>
-<body>
-  <h1>Detailed Diagnostic Report (DDR)</h1>
-  <p style="color:#888;font-size:12px;">Generated: ${new Date().toLocaleString()}</p>
-  <hr style="border:1px solid #eee;margin:20px 0;"/>
-  ${htmlBody}
-  ${allImagesSection}
-  <hr style="margin:40px 0;border:1px solid #eee;"/>
-  <p style="font-size:11px;color:#aaa;text-align:center;">Generated by DDR Report Generator</p>
-</body>
-</html>`;
-
-    const blob = new Blob([fullHtml], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const html = buildDownloadHTML(rawReport, result?.images || []);
+    const blob = new Blob([html], { type: 'text/html' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = `DDR_Report_${new Date().toISOString().slice(0, 10)}.html`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   const sections = result ? parseReport(result.report) : {};
+  const imageMap = buildImageMap(result?.images);
 
   return (
     <div className="app-root">
+
       {/* Header */}
       <header className="app-header">
         <div className="header-inner">
           <div className="logo-mark">DDR</div>
           <div>
             <h1 className="app-title">Detailed Diagnostic Report Generator</h1>
-            <p className="app-subtitle">Professional inspection analysis & diagnostic reporting</p>
+            <p className="app-subtitle">Professional inspection analysis &amp; diagnostic reporting</p>
           </div>
         </div>
       </header>
@@ -303,7 +375,7 @@ export default function App() {
         {/* Input Panel */}
         <section className="panel input-panel">
           <h2 className="panel-heading">Upload Documents</h2>
-          <p className="panel-sub">Supports PDF and image files (JPG, PNG)</p>
+          <p className="panel-sub">Supports PDF files (Inspection Report + Thermal Report)</p>
 
           <div className="upload-grid">
             <DropZone
@@ -342,11 +414,10 @@ export default function App() {
             onClick={generate}
             disabled={!canGenerate || loading}
           >
-            {loading ? (
-              <><span className="spinner" /> Generating Report…</>
-            ) : (
-              <><span className="btn-icon">⚡</span> Generate DDR Report</>
-            )}
+            {loading
+              ? <><span className="spinner" /> Generating Report…</>
+              : <><span className="btn-icon">⚡</span> Generate DDR Report</>
+            }
           </button>
 
           {statusMsg && (
@@ -361,7 +432,7 @@ export default function App() {
         {result && (
           <section className="panel result-panel">
 
-            {/* Stats bar */}
+            {/* Stats */}
             <div className="stats-bar">
               <div className="stat-item">
                 <span className="stat-val">{result.stats.total_images}</span>
@@ -372,8 +443,12 @@ export default function App() {
                 <span className="stat-label">From inspection</span>
               </div>
               <div className="stat-item">
-                <span className="stat-val">{result.stats.thermal_images}</span>
-                <span className="stat-label">From thermal</span>
+                <span className="stat-val">{result.stats.thermal_scans}</span>
+                <span className="stat-label">Thermal scans</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-val">{result.stats.visual_photos}</span>
+                <span className="stat-label">Visual photos</span>
               </div>
             </div>
 
@@ -402,76 +477,114 @@ export default function App() {
             {/* Extracted Images Gallery */}
             {result.images && result.images.length > 0 && (
               <div className="images-gallery">
-                <h3 className="gallery-heading">Extracted Images ({result.images.length})</h3>
-                <div className="img-thumbs">
-                  {result.images.map((img) => (
-                    <div key={img.id} className="img-thumb" onClick={() => setActiveImg(img)}>
-                      <img src={`data:${img.mime_type};base64,${img.data}`} alt={img.id} />
-                      <div className="img-thumb-label">{img.id}</div>
-                      <div className="img-thumb-source">{img.source} · p.{img.page}</div>
+                <h3 className="gallery-heading">
+                  Extracted Images ({result.images.length}) — click to enlarge
+                </h3>
+                {/* Group by type */}
+                {['inspection_photo', 'thermal_scan', 'visual_photo'].map(type => {
+                  const group = result.images.filter(img => img.img_type === type);
+                  if (!group.length) return null;
+                  return (
+                    <div key={type} style={{ marginBottom: 12 }}>
+                      <div
+                        style={{
+                          display: 'inline-block',
+                          background: typeBadgeColor(type),
+                          color: '#fff',
+                          fontSize: 11,
+                          fontWeight: 700,
+                          padding: '2px 10px',
+                          borderRadius: 10,
+                          marginBottom: 8,
+                        }}
+                      >
+                        {typeLabel(type)} ({group.length})
+                      </div>
+                      <div className="img-thumbs">
+                        {group.map(img => (
+                          <div
+                            key={img.id}
+                            className="img-thumb"
+                            onClick={() => setActiveImg(img)}
+                            title={img.id}
+                          >
+                            <img
+                              src={`data:${img.mime_type};base64,${img.data}`}
+                              alt={img.id}
+                            />
+                            <div className="img-thumb-label">{img.source} p.{img.page}</div>
+                            <div className="img-thumb-source">{img.img_type.replace('_', ' ')}</div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             )}
 
-            {/* Structured view */}
+            {/* Structured View */}
             {viewMode === 'structured' && (
               <div className="structured-report">
-                {sections.summary && (
-                  <ReportSection num="1" title="Property Issue Summary">
-                    <ReportWithImages text={sections.summary} images={result.images} />
-                  </ReportSection>
+                {[
+                  { key: 'summary',      num: '1', title: 'Property Issue Summary' },
+                  { key: 'observations', num: '2', title: 'Area-wise Observations' },
+                  { key: 'rootcause',    num: '3', title: 'Probable Root Cause' },
+                  { key: 'severity',     num: '4', title: 'Severity Assessment' },
+                  { key: 'actions',      num: '5', title: 'Recommended Actions' },
+                  { key: 'notes',        num: '6', title: 'Additional Notes' },
+                  { key: 'missing',      num: '7', title: 'Missing or Unclear Information' },
+                ].map(({ key, num, title }) =>
+                  sections[key] ? (
+                    <ReportSection key={key} num={num} title={title}>
+                      <ReportWithImages
+                        text={sections[key]}
+                        imageMap={imageMap}
+                        onImageClick={setActiveImg}
+                      />
+                    </ReportSection>
+                  ) : null
                 )}
-                {sections.observations && (
-                  <ReportSection num="2" title="Area-wise Observations">
-                    <ReportWithImages text={sections.observations} images={result.images} />
-                  </ReportSection>
-                )}
-                {sections.rootcause && (
-                  <ReportSection num="3" title="Probable Root Cause">
-                    <ReportWithImages text={sections.rootcause} images={result.images} />
-                  </ReportSection>
-                )}
-                {sections.severity && (
-                  <ReportSection num="4" title="Severity Assessment">
-                    <ReportWithImages text={sections.severity} images={result.images} />
-                  </ReportSection>
-                )}
-                {sections.actions && (
-                  <ReportSection num="5" title="Recommended Actions">
-                    <ReportWithImages text={sections.actions} images={result.images} />
-                  </ReportSection>
-                )}
-                {sections.notes && (
-                  <ReportSection num="6" title="Additional Notes">
-                    <ReportWithImages text={sections.notes} images={result.images} />
-                  </ReportSection>
-                )}
-                {sections.missing && (
-                  <ReportSection num="7" title="Missing or Unclear Information">
-                    <ReportWithImages text={sections.missing} images={result.images} />
-                  </ReportSection>
+
+                {Object.keys(sections).length === 0 && (
+                  <pre className="raw-report">{rawReport}</pre>
                 )}
               </div>
             )}
 
-            {/* Raw view */}
+            {/* Raw View */}
             {viewMode === 'raw' && (
               <pre className="raw-report">{rawReport}</pre>
             )}
+
           </section>
         )}
       </main>
 
-      {/* Image lightbox */}
+      {/* Lightbox */}
       {activeImg && (
         <div className="lightbox" onClick={() => setActiveImg(null)}>
           <div className="lightbox-inner" onClick={e => e.stopPropagation()}>
             <button className="lightbox-close" onClick={() => setActiveImg(null)}>✕</button>
-            <img src={`data:${activeImg.mime_type};base64,${activeImg.data}`} alt={activeImg.id} />
+            <img
+              src={`data:${activeImg.mime_type};base64,${activeImg.data}`}
+              alt={activeImg.id}
+            />
             <div className="lightbox-meta">
-              {activeImg.id} · {activeImg.source} · Page {activeImg.page}
+              <span
+                style={{
+                  background: typeBadgeColor(activeImg.img_type),
+                  color: '#fff',
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: '2px 8px',
+                  borderRadius: 8,
+                  marginRight: 8,
+                }}
+              >
+                {typeLabel(activeImg.img_type)}
+              </span>
+              {activeImg.id} · {activeImg.source} · Page {activeImg.page} · {activeImg.size_kb} KB
             </div>
           </div>
         </div>
