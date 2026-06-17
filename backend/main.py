@@ -1,168 +1,341 @@
+"""
+DDR Report Generator - Backend
+Reads inspection + thermal PDFs, extracts all images with metadata,
+sends structured context to LLM, returns report + images for frontend rendering.
+Works generically on any similar inspection/thermal PDF pair.
+"""
+
 import base64
+import re
+import fitz  # PyMuPDF
+import httpx
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import httpx
-import fitz
 
-app = FastAPI()
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="DDR Report Generator")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-DDR_PROMPT = "You are an expert building inspection analyst. Read the provided documents and generate a professional DDR. STRICT RULES: Never invent facts. Write [CONFLICT:] for conflicts. Write Not Available for missing data. Use client-friendly language. Generate EXACTLY this structure:\n\n1. PROPERTY ISSUE SUMMARY\n2. AREA-WISE OBSERVATIONS (for each area: Observations, Thermal Data, Visual Evidence, Condition)\n3. PROBABLE ROOT CAUSE\n4. SEVERITY ASSESSMENT - Issue | Location | Severity | Reasoning\n5. RECOMMENDED ACTIONS - URGENT / SHORT-TERM / LONG-TERM\n6. ADDITIONAL NOTES\n7. MISSING OR UNCLEAR INFORMATION"
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL    = "meta-llama/llama-4-scout-17b-16e-instruct"
 
-def get_mime(filename):
-    ext = filename.lower().split(".")[-1]
-    if ext in ("jpg", "jpeg"): return "image/jpeg"
-    if ext == "png": return "image/png"
-    return "application/pdf"
+SYSTEM_PROMPT = """You are a senior building inspection analyst writing a professional DDR (Detailed Diagnostic Report) for a client.
 
-def extract_from_pdf(file_bytes, source_label):
-    text = ""
+STRICT RULES:
+1. NEVER invent facts. Only use information from the documents provided.
+2. If information is missing write: Not Available
+3. If information conflicts write: [CONFLICT: explain here]
+4. Use simple, client-friendly language. Avoid unnecessary technical jargon.
+5. Do NOT duplicate observations across sections.
+
+IMAGE PLACEMENT RULES:
+- You will receive an IMAGE MANIFEST listing every extracted image with its ID, type, page, and source.
+- Place image references in your report using EXACTLY this format: {IMAGE:image_id}
+- For each area observation, place the relevant images UNDER that specific area — not all together.
+- For each area: place inspection_photo first, then thermal_scan, then visual_photo.
+- Only reference images relevant to the observation being described.
+- If no image exists for an area write: Image Not Available
+
+OUTPUT FORMAT — use EXACTLY these section headers with ## prefix:
+
+## 1. PROPERTY ISSUE SUMMARY
+2-3 sentence executive summary of overall property condition.
+
+## 2. AREA-WISE OBSERVATIONS
+For EACH impacted area found in the documents create a subsection like this:
+
+### Area: [Area Name]
+**Observations:** what was found on the negative/impacted side
+**Thermal Data:** temperature readings, hotspot/coldspot values if available, or Not Available
+**Visual Evidence:**
+{IMAGE:image_id_inspection_photo}
+{IMAGE:image_id_thermal_scan}
+{IMAGE:image_id_visual_photo}
+**Condition:** Good / Fair / Poor / Critical
+
+## 3. PROBABLE ROOT CAUSE
+Explain the likely causes logically based on evidence only.
+
+## 4. SEVERITY ASSESSMENT
+| Area | Issue | Severity | Reasoning |
+|------|-------|----------|-----------|
+Fill one row per issue found.
+
+## 5. RECOMMENDED ACTIONS
+**URGENT (Immediate action required):**
+- action item
+
+**SHORT-TERM (Within 1-3 months):**
+- action item
+
+**LONG-TERM (Preventive/structural):**
+- action item
+
+## 6. ADDITIONAL NOTES
+Any other relevant observations, checklist results, structural notes.
+
+## 7. MISSING OR UNCLEAR INFORMATION
+List any data that was absent or ambiguous. Write None if everything was clear.
+"""
+
+
+# ─── PDF Extraction ────────────────────────────────────────────────────────────
+
+def extract_pdf_content(file_bytes: bytes, source_label: str):
+    """
+    Extract full text and all images from a PDF.
+
+    Thermal PDFs have 2 images per page:
+      img index 0 = thermal_scan (heat map)
+      img index 1 = visual_photo (regular camera photo)
+
+    Inspection PDFs: all images = inspection_photo
+    """
+    text   = ""
     images = []
+    is_thermal = "thermal" in source_label.lower()
+
     try:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
+
+        # Extract full text from every page
         for page in doc:
-            text += page.get_text()
+            text += page.get_text() + "\n"
+
+        # Extract images from every page
         for page_num, page in enumerate(doc):
             image_list = page.get_images(full=True)
-            for img_index, img in enumerate(image_list):
+
+            for img_index, img_info in enumerate(image_list):
                 try:
-                    xref = img[0]
+                    xref       = img_info[0]
                     base_image = doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    if len(image_bytes) > 1_000_000:
+                    img_bytes  = base_image["image"]
+                    img_ext    = base_image["ext"]
+
+                    # Skip tiny icons/logos (under 8 KB)
+                    if len(img_bytes) < 8_000:
                         continue
-                    if len(image_bytes) < 10_000:
+
+                    # Only allow jpeg and png
+                    mime = "image/jpeg" if img_ext in ("jpg", "jpeg") else f"image/{img_ext}"
+                    if mime not in ("image/jpeg", "image/png"):
                         continue
-                    image_ext = base_image["ext"]
-                    mime_type = "image/jpeg" if image_ext in ("jpg", "jpeg") else f"image/{image_ext}"
-                    if mime_type not in ("image/jpeg", "image/png"):
-                        continue
-                    b64_image = base64.b64encode(image_bytes).decode()
+
+                    # Determine type:
+                    # Thermal page: first image = heat map scan, second = visual photo
+                    # Inspection page: all photos are inspection photos
+                    if is_thermal:
+                        img_type = "thermal_scan" if img_index == 0 else "visual_photo"
+                    else:
+                        img_type = "inspection_photo"
+
+                    img_id = f"{source_label}_p{page_num + 1}_img{img_index + 1}"
+
                     images.append({
-                        "id": f"{source_label}_p{page_num+1}_img{img_index+1}",
-                        "data": b64_image,
-                        "mime_type": mime_type,
-                        "source": source_label,
-                        "page": page_num + 1
+                        "id":        img_id,
+                        "data":      base64.b64encode(img_bytes).decode(),
+                        "mime_type": mime,
+                        "source":    source_label,
+                        "page":      page_num + 1,
+                        "img_index": img_index + 1,
+                        "img_type":  img_type,
+                        "size_kb":   round(len(img_bytes) / 1024, 1),
                     })
-                except:
+
+                except Exception:
                     continue
+
         doc.close()
+
     except Exception as e:
-        text = f"[Could not extract text: {str(e)}]"
+        text = f"[PDF extraction error: {e}]"
+
     return text, images
 
-def smart_truncate(text, max_chars=1500):
-    priority_keywords = ['summary', 'dampness', 'leakage', 'crack', 'hollow', 'seepage',
-                        'observation', 'hotspot', 'coldspot', 'impacted', 'issue',
-                        'thermal', 'temperature', 'rb0', 'bosch', 'emissivity',
-                        'reflected', 'celsius', 'skirting', 'bathroom', 'parking']
-    lines = text.split('\n')
-    priority_lines = []
-    other_lines = []
+
+# ─── Text Helpers ──────────────────────────────────────────────────────────────
+
+def clean_text(text: str) -> str:
+    """Strip excess whitespace while keeping structure."""
+    lines   = [l.strip() for l in text.split("\n") if l.strip()]
+    result  = []
+    prev_blank = False
     for line in lines:
-        if any(kw in line.lower() for kw in priority_keywords):
-            priority_lines.append(line)
+        if not line:
+            if not prev_blank:
+                result.append("")
+            prev_blank = True
         else:
-            other_lines.append(line)
-    combined = '\n'.join(priority_lines + other_lines)
-    return combined[:max_chars]
+            result.append(line)
+            prev_blank = False
+    return "\n".join(result)
+
+
+def cap_text(text: str, max_chars: int) -> str:
+    """Trim text at a natural paragraph boundary near max_chars."""
+    if len(text) <= max_chars:
+        return text
+    cut = text.rfind("\n\n", 0, max_chars)
+    if cut == -1:
+        cut = max_chars
+    return text[:cut] + "\n\n[... truncated for length ...]"
+
+
+def build_image_manifest(all_images: list) -> str:
+    """
+    Build a clear structured manifest for the AI so it knows
+    exactly which image ID maps to which type and which area/page.
+    Groups thermal images by page so the AI sees scan+photo pairs clearly.
+    """
+    if not all_images:
+        return "No images extracted from documents."
+
+    lines = [
+        f"TOTAL IMAGES: {len(all_images)}",
+        "Use EXACTLY this format to embed images: {IMAGE:image_id}",
+        "Distribute images under their matching area section — do NOT group them all together.",
+        "",
+    ]
+
+    # Inspection photos
+    insp = [i for i in all_images if i["source"] == "Inspection"]
+    if insp:
+        lines.append(f"INSPECTION PHOTOS ({len(insp)}) — site photos showing visible damage/dampness/cracks:")
+        for img in insp:
+            lines.append(f"  {img['id']} | page {img['page']} | type: {img['img_type']} | {img['size_kb']} KB")
+        lines.append("")
+
+    # Thermal images grouped by page
+    thermal = [i for i in all_images if i["source"] == "Thermal"]
+    if thermal:
+        lines.append(f"THERMAL IMAGES ({len(thermal)}) — each page = one scan location:")
+        lines.append("  Rule: img1 on each page = thermal_scan (heat map), img2 = visual_photo (camera)")
+        lines.append("  Page order matches area order: thermal page 1 = area 1, page 2 = area 2, etc.")
+        lines.append("")
+
+        pages = {}
+        for img in thermal:
+            pages.setdefault(img["page"], []).append(img)
+
+        for pg in sorted(pages.keys()):
+            lines.append(f"  [Thermal Page {pg}]")
+            for img in pages[pg]:
+                lines.append(f"    {img['id']} | type: {img['img_type']} | {img['size_kb']} KB")
+
+        lines.append("")
+
+    lines.append("PLACEMENT: Match inspection photos to areas by page order (page 1 photos → area 1, etc.)")
+    lines.append("           Match thermal page N to impacted area N in the same sequential order.")
+
+    return "\n".join(lines)
+
+
+# ─── Main Endpoint ─────────────────────────────────────────────────────────────
 
 @app.post("/generate-ddr")
 async def generate_ddr(
     inspection_report: UploadFile = File(...),
-    thermal_report: UploadFile = File(...),
-    api_key: str = Form(...)
+    thermal_report:    UploadFile = File(...),
+    api_key:           str        = Form(...),
 ):
-    if not api_key.startswith("gsk_"):
-        raise HTTPException(status_code=400, detail="Invalid Groq API key.")
+    if not api_key.strip().startswith("gsk_"):
+        raise HTTPException(status_code=400, detail="Invalid Groq API key format.")
 
-    insp_bytes = await inspection_report.read()
+    # Read files
+    insp_bytes    = await inspection_report.read()
     thermal_bytes = await thermal_report.read()
 
-    insp_mime = get_mime(inspection_report.filename)
-    thermal_mime = get_mime(thermal_report.filename)
+    # Extract text + images
+    insp_text,    insp_images    = extract_pdf_content(insp_bytes,    "Inspection")
+    thermal_text, thermal_images = extract_pdf_content(thermal_bytes, "Thermal")
 
-    all_images = []
+    insp_text    = clean_text(insp_text)
+    thermal_text = clean_text(thermal_text)
 
-    if "pdf" in insp_mime:
-        insp_text, insp_images = extract_from_pdf(insp_bytes, "Inspection")
-        all_images.extend(insp_images)
-    else:
-        insp_text = f"[Image file: {inspection_report.filename}]"
-        insp_b64 = base64.b64encode(insp_bytes).decode()
-        all_images.append({"id": "insp_img1", "data": insp_b64, "mime_type": insp_mime, "source": "Inspection", "page": 1})
+    all_images     = insp_images + thermal_images
+    image_manifest = build_image_manifest(all_images)
 
-    if "pdf" in thermal_mime:
-        thermal_text, thermal_images = extract_from_pdf(thermal_bytes, "Thermal")
-        all_images.extend(thermal_images)
-    else:
-        thermal_text = f"[Image file: {thermal_report.filename}]"
-        thermal_b64 = base64.b64encode(thermal_bytes).decode()
-        all_images.append({"id": "thermal_img1", "data": thermal_b64, "mime_type": thermal_mime, "source": "Thermal", "page": 1})
+    # Cap text to stay within token limits — keep most useful content
+    insp_text_capped    = cap_text(insp_text,    6000)
+    thermal_text_capped = cap_text(thermal_text, 5000)
 
-    insp_text = smart_truncate(insp_text, 2000)
-    thermal_text = smart_truncate(thermal_text, 3000)
+    user_message = f"""=== DOCUMENT 1: INSPECTION REPORT ===
+{insp_text_capped}
 
-    image_summary = ""
-    if all_images:
-        image_summary = f"\n\nIMAGES FOUND: {len(all_images)} images extracted from documents."
-        for img in all_images[:10]:
-            image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
-        if len(all_images) > 10:
-            image_summary += f"\n... and {len(all_images) - 10} more images"
-        image_summary += "\nWhen referencing images in the report, use EXACTLY this format: [image_id] for example [Inspection_p3_img1]. Do NOT write Image: before the id. Only use the exact image IDs listed above."
+=== DOCUMENT 2: THERMAL REPORT ===
+{thermal_text_capped}
 
-    user_message = f"""DOCUMENT: Inspection Report
+=== IMAGE MANIFEST ===
+{image_manifest}
 
-{insp_text}
+=== YOUR TASK ===
+Generate a complete, accurate DDR report using ALL information above.
+Follow the system instructions exactly for structure, image placement, and rules.
+Place images using {{IMAGE:image_id}} under the correct area observation.
+Every impacted area in the inspection report must have its own subsection in Section 2.
+"""
 
-DOCUMENT: Thermal Report
-
-{thermal_text}
-
-{image_summary}
-
-Generate the complete DDR report based on the provided documents."""
-
+    # Call Groq
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            response = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
+        async with httpx.AsyncClient(timeout=180) as client:
+            resp = await client.post(
+                GROQ_ENDPOINT,
                 headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {api_key.strip()}",
+                    "Content-Type":  "application/json",
                 },
                 json={
-                    "model": "meta-llama/llama-4-scout-17b-16e-instruct",
+                    "model":       GROQ_MODEL,
                     "messages": [
-                        {"role": "system", "content": DDR_PROMPT},
-                        {"role": "user", "content": user_message}
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user",   "content": user_message},
                     ],
-                    "max_tokens": 4096
-                }
+                    "max_tokens":  4096,
+                    "temperature": 0.1,
+                },
             )
-            response.raise_for_status()
-            data = response.json()
-            report = data["choices"][0]["message"]["content"]
+            resp.raise_for_status()
+            report = resp.json()["choices"][0]["message"]["content"]
 
     except httpx.HTTPStatusError as e:
-        detail = f"Groq API error: {e.response.status_code} - {e.response.text}"
-        raise HTTPException(status_code=500, detail=detail)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Groq API error {e.response.status_code}: {e.response.text[:400]}",
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
     return JSONResponse({
         "report": report,
-        "images": all_images,
+        "images": [
+            {
+                "id":        img["id"],
+                "data":      img["data"],
+                "mime_type": img["mime_type"],
+                "source":    img["source"],
+                "page":      img["page"],
+                "img_type":  img["img_type"],
+                "size_kb":   img["size_kb"],
+            }
+            for img in all_images
+        ],
         "stats": {
-            "total_images": len(all_images),
-            "inspection_images": len([i for i in all_images if i["source"] == "Inspection"]),
-            "thermal_images": len([i for i in all_images if i["source"] == "Thermal"])
-        }
+            "total_images":      len(all_images),
+            "inspection_images": len(insp_images),
+            "thermal_images":    len(thermal_images),
+            "thermal_scans":     len([i for i in thermal_images if i["img_type"] == "thermal_scan"]),
+            "visual_photos":     len([i for i in thermal_images if i["img_type"] == "visual_photo"]),
+        },
     })
+
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "DDR Report Generator"}
+    return {"status": "ok", "service": "DDR Report Generator v2"}
