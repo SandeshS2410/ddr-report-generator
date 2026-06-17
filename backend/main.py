@@ -217,7 +217,6 @@ def build_image_manifest(all_images: list) -> str:
     if thermal:
         lines.append(f"THERMAL IMAGES ({len(thermal)}) — each page = one scan location:")
         lines.append("  Rule: img1 on each page = thermal_scan (heat map), img2 = visual_photo (camera)")
-        lines.append("PLACEMENT: Match inspection photos to areas by page order")
         lines.append("")
 
         pages = {}
@@ -231,9 +230,7 @@ def build_image_manifest(all_images: list) -> str:
 
         lines.append("")
 
-    lines.append("PLACEMENT: Match inspection photos to areas by page order (page 1 photos → area 1, etc.)")
-    lines.append("           Match thermal page N to impacted area N in the same sequential order.")
-
+    
     return "\n".join(lines)
 
 
