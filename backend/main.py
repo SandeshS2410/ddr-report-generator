@@ -1,10 +1,9 @@
 import base64
-import io
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import httpx
-import fitz  # PyMuPDF
+import fitz
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -33,7 +32,7 @@ def extract_from_pdf(file_bytes, source_label):
                     image_bytes = base_image["image"]
                     if len(image_bytes) > 1_000_000:
                         continue
-                    if len(image_bytes) < 10_000:  # skip tiny color scale images
+                    if len(image_bytes) < 10_000:
                         continue
                     image_ext = base_image["ext"]
                     mime_type = "image/jpeg" if image_ext in ("jpg", "jpeg") else f"image/{image_ext}"
@@ -58,7 +57,7 @@ def smart_truncate(text, max_chars=1500):
     priority_keywords = ['summary', 'dampness', 'leakage', 'crack', 'hollow', 'seepage',
                         'observation', 'hotspot', 'coldspot', 'impacted', 'issue',
                         'thermal', 'temperature', 'rb0', 'bosch', 'emissivity',
-                        'reflected', '°c', 'celsius', 'skirting', 'bathroom', 'parking']
+                        'reflected', 'celsius', 'skirting', 'bathroom', 'parking']
     lines = text.split('\n')
     priority_lines = []
     other_lines = []
@@ -113,7 +112,7 @@ async def generate_ddr(
             image_summary += f"\n- {img['id']} (Source: {img['source']}, Page: {img['page']})"
         if len(all_images) > 10:
             image_summary += f"\n... and {len(all_images) - 10} more images"
-        image_summary += "\nPlease reference these images in appropriate sections of the DDR report using [Image: image_id] notation."
+        image_summary += "\nWhen referencing images in the report, use EXACTLY this format: [image_id] for example [Inspection_p3_img1]. Do NOT write Image: before the id. Only use the exact image IDs listed above."
 
     user_message = f"""DOCUMENT: Inspection Report
 
