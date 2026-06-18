@@ -1,16 +1,13 @@
-FROM node:20-slim AS builder
-
-ARG REACT_APP_API_URL
-ENV REACT_APP_API_URL=$REACT_APP_API_URL
+FROM python:3.11-slim
 
 WORKDIR /app
-COPY package.json .
-RUN npm install
-COPY . .
-RUN npm run build
 
-FROM nginx:alpine
-COPY --from=builder /app/build /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY main.py .
+
+ENV PORT=8000
+EXPOSE 8000
+
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
