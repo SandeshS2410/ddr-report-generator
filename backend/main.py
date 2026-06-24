@@ -696,33 +696,49 @@ Follow the system instructions exactly for structure, image placement, and rules
 Every area listed above must have its own subsection in Section 2.
 """
 
-    try:
-        async with httpx.AsyncClient(timeout=180) as client:
-            resp = await client.post(
-                GROQ_ENDPOINT,
-                headers={
-                    "Authorization": f"Bearer {api_key.strip()}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": GROQ_TEXT_MODEL,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_message},
-                    ],
-                    "max_tokens": 4096,
-                    "temperature": 0.1,
-                },
-            )
-            resp.raise_for_status()
-            report = resp.json()["choices"][0]["message"]["content"]
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Groq API error {e.response.status_code}: {e.response.text[:400]}",
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    report = None
+    last_error_detail = None
+    max_report_retries = 4
+    for attempt in range(max_report_retries):
+        try:
+            async with httpx.AsyncClient(timeout=180) as client:
+                resp = await client.post(
+                    GROQ_ENDPOINT,
+                    headers={
+                        "Authorization": f"Bearer {api_key.strip()}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": GROQ_TEXT_MODEL,
+                        "messages": [
+                            {"role": "system", "content": SYSTEM_PROMPT},
+                            {"role": "user", "content": user_message},
+                        ],
+                        "max_tokens": 4096,
+                        "temperature": 0.1,
+                    },
+                )
+                resp.raise_for_status()
+                report = resp.json()["choices"][0]["message"]["content"]
+                break
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code in (401, 403):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Groq rejected the provided API key. Check that it is valid and not revoked.",
+                )
+            if e.response.status_code == 429 and attempt < max_report_retries - 1:
+                retry_after = float(e.response.headers.get("retry-after", 2 ** (attempt + 1)))
+                await asyncio.sleep(retry_after + 0.5)
+                continue
+            last_error_detail = f"Groq API error {e.response.status_code}: {e.response.text[:400]}"
+            break
+        except Exception as e:
+            last_error_detail = str(e)
+            break
+
+    if report is None:
+        raise HTTPException(status_code=500, detail=last_error_detail or "Failed to generate report after retries.")
 
     # Flatten all images for the frontend, with metadata about match confidence
     all_images = []
